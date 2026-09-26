@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Bangkok Flood Monitor · live map</title>
+<meta name="description" content="Unofficial live flood monitoring map for Bangkok: rain radar, rainfall and canal/river water levels, flooded-road reports and traffic cameras from public data feeds.">
+<meta property="og:title" content="Bangkok Flood Monitor · live map">
+<meta property="og:description" content="Live rain radar, rainfall, water levels, flooded roads (red/yellow) and CCTV for Bangkok. Unofficial – follow BMA/TMD/DDPM warnings.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌧️</text></svg>">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <aside id="panel" class="collapsed-mobile">
+    <div class="grab" id="grab" aria-label="Toggle panel"><span></span></div>
+    <header class="ph">
+      <div>
+        <h1>Bangkok Flood Monitor</h1>
+        <div class="sub">Live public data · กรุงเทพฯ และปริมณฑล</div>
+      </div>
+      <div class="live"><span class="dot"></span>LIVE</div>
+    </header>
+    <div class="updated" id="updated">Loading feeds…</div>
+
+    <section class="alert">
+      <b>Unofficial monitoring aid.</b> Follow official warnings from BMA, TMD and DDPM. Emergency / flooding: <b>BMA hotline 1555</b> · Disaster: <b>1784</b> · Emergency: <b>191</b>.
+    </section>
+
+    <section>
+      <h2>Road flooding right now</h2>
+      <div class="kpis" id="roadKpis">
+        <div class="kpi red"><div class="v" id="kRed">–</div><div class="l">Not passable / deep</div></div>
+        <div class="kpi yellow"><div class="v" id="kYellow">–</div><div class="l">Water on road</div></div>
+        <div class="kpi green"><div class="v" id="kGreen">–</div><div class="l">Reported receded</div></div>
+      </div>
+      <div class="note" id="roadNote"></div>
+      <div id="roadList" class="list"></div>
+    </section>
+
+    <section>
+      <h2>Chao Phraya River</h2>
+      <div id="cpy" class="list"><div class="muted">Loading…</div></div>
+    </section>
+
+    <section>
+      <h2>Heaviest rain (stations)</h2>
+      <div class="tabs" id="rainTabs"><button data-k="24" class="on">Last 24 h</button><button data-k="1">Last 1 h</button></div>
+      <div id="rainTop" class="list"><div class="muted">Loading…</div></div>
+    </section>
+
+    <section>
+      <h2>Canals &amp; rivers near/over bank</h2>
+      <div id="wlTop" class="list"><div class="muted">Loading…</div></div>
+    </section>
+
+    <section>
+      <h2>Cameras near flood reports</h2>
+      <div id="camNear" class="list"><div class="muted">Loading…</div></div>
+    </section>
+
+    <section>
+      <h2>Legend</h2>
+      <div class="legend">
+        <div class="lg-title">Roads (flood reports)</div>
+        <div><i class="pill" style="background:#e5383b"></i>Red – flooded / not passable for small cars (&gt;20 cm, or “ผ่านไม่ได้”)</div>
+        <div><i class="pill" style="background:#f4b400"></i>Yellow – water on road, passable (≤20 cm, “ผ่านได้”) or depth not stated</div>
+        <div><i class="pill" style="background:#2eb872"></i>Green – source explicitly reports water receded / normal</div>
+        <div class="muted small">Roads with no report are not coloured. Filled pill = agency / iTIC / DOH / BMA reports; hollow ring = citizen report (Traffy Fondue, unverified).</div>
+        <div class="lg-title">Rainfall (mm)</div>
+        <div class="scale" id="rainScale"></div>
+        <div class="lg-title">Water level (% of bank-full)</div>
+        <div class="scale" id="wlScale"></div>
+        <div class="lg-title">Other</div>
+        <div><i class="cam">▶</i>Traffic camera (click for live stream)</div>
+        <div><i class="sw radar"></i>Rain radar (RainViewer, ~10 min)</div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Data feeds</h2>
+      <div id="feeds" class="feeds"></div>
+      <div class="muted small">Auto-refresh: road reports, citizen reports &amp; radar every 5 min; ThaiWater stations every 10 min. A failed feed is shown as unavailable and its layer is cleared – no cached or estimated values are shown.</div>
+    </section>
+
+    <section class="small muted foot">
+      Sources: <a href="https://www.thaiwater.net" target="_blank" rel="noopener">ThaiWater / HII (สสน.)</a> incl. RID, TMD, BMA stations ·
+      <a href="https://traffic.longdo.com" target="_blank" rel="noopener">Longdo Traffic / iTIC</a> events (DOH, BMA Drainage Dept., iTIC users) &amp; cameras ·
+      <a href="https://fondue.traffy.in.th" target="_blank" rel="noopener">Traffy Fondue</a> citizen reports ·
+      <a href="https://www.rainviewer.com" target="_blank" rel="noopener">RainViewer</a> radar ·
+      Basemap © Esri, HERE, Garmin, © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors.<br>
+      Official: <a href="https://weather.bangkok.go.th" target="_blank" rel="noopener">BMA weather &amp; flood</a> ·
+      <a href="https://www.tmd.go.th" target="_blank" rel="noopener">TMD</a> ·
+      <a href="https://disaster.gistda.or.th" target="_blank" rel="noopener">GISTDA flood extent</a> ·
+      <a href="https://www.disaster.go.th" target="_blank" rel="noopener">DDPM</a>.<br>
+      Not affiliated with any agency. Readings can be delayed, missing or wrong.
+    </section>
+  </aside>
+
+  <main id="mapwrap">
+    <div id="map"></div>
+    <div id="radarCtl" class="radar-ctl hidden">
+      <button id="radarPlay" title="Play last hour">▶</button>
+      <span id="radarTime">–</span>
+    </div>
+  </main>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.15/dist/hls.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
