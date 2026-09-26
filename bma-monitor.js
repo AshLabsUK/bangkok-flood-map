@@ -172,7 +172,7 @@
         .filter((x) => x.la && x.lo && inBkkArea(x.la, x.lo) && (!x.stop || x.stop.getTime() >= now) && (!x.start || x.start.getTime() <= now + 36e5) && x.c.level !== "green")
         .map((x) => ({
           code: "ITIC-" + (x.e.id || x.i),
-          road: x.e.title.replace(/^น้ำท่วม\s*/, ""),
+          road: translateRoad(x.e.title.replace(/^น้ำท่วม\s*/, "").trim()),
           district: "",
           location: (x.e.description || "").slice(0, 200) + " — " + x.c.reason,
           lat: x.la,
