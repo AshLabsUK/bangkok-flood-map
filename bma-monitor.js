@@ -795,19 +795,19 @@
 
   // ---------- boot ----------
 
-  async function tick(pointsByCode) {
-    const [bmaR, iticR, traffyR] = await Promise.all([loadSensorData(), loadEvents(), loadTraffy()]);
+  function renderCombined(bmaR, iticR, traffyR, pointsByCode, pending) {
     const points = [...bmaR.points, ...iticR.points, ...traffyR.points];
     const roads = groupByRoad(points);
 
     const statusParts = [bmaR.ok ? formatAsOf(bmaR.latestTs) : "BMA sensor feed unavailable"];
     if (!iticR.ok) statusParts.push("iTIC feed unavailable");
-    if (!traffyR.ok) statusParts.push("Traffy feed unavailable");
+    if (!traffyR.ok) statusParts.push(pending ? "Traffy still loading…" : "Traffy feed unavailable");
     document.getElementById("asOf").textContent = statusParts.join(" · ");
 
     if (!points.length) {
-      document.getElementById("roadList").innerHTML =
-        '<div class="loading">All road-flood feeds (BMA, iTIC, Traffy) are unreachable right now. Try reloading in a minute.</div>';
+      document.getElementById("roadList").innerHTML = pending
+        ? '<div class="loading">Fetching live sensor readings…</div>'
+        : '<div class="loading">All road-flood feeds (BMA, iTIC, Traffy) are unreachable right now. Try reloading in a minute.</div>';
     }
     renderKPIs(points);
     renderList(roads);
@@ -834,6 +834,20 @@
         if (m) { markerLayer.removeLayer(m); markerByCode.delete(code); }
       }
     }
+    return points;
+  }
+
+  // Render as soon as BMA + iTIC (normally fast) are back, instead of making the whole page wait on
+  // whichever of the three feeds happens to be slow that night — then quietly patch in Traffy (which
+  // has been the flaky one) if/when it resolves, without blocking anything.
+  async function tick(pointsByCode) {
+    const traffyP = loadTraffy();
+    const [bmaR, iticR] = await Promise.all([loadSensorData(), loadEvents()]);
+    let points = renderCombined(bmaR, iticR, { points: [], ok: true }, pointsByCode, true);
+
+    traffyP.then((traffyR) => {
+      points = renderCombined(bmaR, iticR, traffyR, pointsByCode, false);
+    });
     return points;
   }
 
