@@ -4,45 +4,31 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Bangkok Road Flood Monitor — BMA Sensors (English)</title>
-<meta name="description" content="Live English dashboard for Bangkok's official road-flood water-level sensor network (floodbangkok.bangkok.go.th) — 250+ sensors, updated every few minutes.">
+<meta name="description" content="Live English traffic-style map of Bangkok's official road-flood water-level sensor network (floodbangkok.bangkok.go.th) — every monitored road coloured by current depth, updated every few minutes.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌊</text></svg>">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
 <link rel="stylesheet" href="bma-monitor.css">
 </head>
 <body>
 <div id="app">
+  <div id="map"></div>
 
-  <header class="hdr">
-    <div class="hdr-top">
-      <h1>Bangkok Road Flood Monitor</h1>
-      <span class="live-pill" id="livePill"><span class="dot"></span>LIVE</span>
+  <button id="panelToggle" aria-label="Toggle panel" aria-expanded="true">
+    <svg width="16" height="16" viewBox="0 0 16 16"><path d="M10 2 5 8l5 6" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
+
+  <aside class="panel" id="panel">
+    <header class="hdr">
+      <div class="hdr-top">
+        <h1>Bangkok Road Flood Monitor</h1>
+        <span class="live-pill" id="livePill"><span class="dot"></span>LIVE</span>
+      </div>
+      <p class="hdr-sub"><span id="asOf">loading…</span></p>
+    </header>
+
+    <div class="search-row">
+      <input id="search" type="search" placeholder="Search a road or district…" autocomplete="off">
     </div>
-    <p class="hdr-sub">Official BMA road water-level sensor network · <span id="asOf">loading…</span></p>
-    <p class="hdr-note">Source data is machine-translated from Thai (road, district and location names). Sensor codes and depth readings are unchanged. Unofficial mirror — not affiliated with BMA. For emergencies call <strong>1555</strong>.</p>
-  </header>
-
-  <section class="legend" aria-label="Severity legend">
-    <div class="lg-item"><i class="sw" style="--c:var(--sev-severe)"></i>Severe — over 15&nbsp;cm</div>
-    <div class="lg-item"><i class="sw" style="--c:var(--sev-flood)"></i>Flooded — 10–15&nbsp;cm</div>
-    <div class="lg-item"><i class="sw" style="--c:var(--sev-slight)"></i>Slight — 5–10&nbsp;cm</div>
-    <div class="lg-item"><i class="sw" style="--c:var(--sev-normal)"></i>Normal — under 5&nbsp;cm</div>
-  </section>
-
-  <section class="kpis" id="kpis" aria-label="Summary counts">
-    <div class="kpi"><div class="v" id="kSevere">–</div><div class="l">severe</div></div>
-    <div class="kpi"><div class="v" id="kFlood">–</div><div class="l">flooded</div></div>
-    <div class="kpi"><div class="v" id="kSlight">–</div><div class="l">slight</div></div>
-    <div class="kpi"><div class="v" id="kNormal">–</div><div class="l">normal</div></div>
-    <div class="kpi muted"><div class="v" id="kRoads">–</div><div class="l">roads w/ water</div></div>
-  </section>
-
-  <section class="mapwrap">
-    <div class="map-hdr">Sensor map <span class="muted">— tap a marker for details</span></div>
-    <div id="map"></div>
-  </section>
-
-  <section class="controls">
-    <input id="search" type="search" placeholder="Search a road or district…" autocomplete="off">
     <div class="zones" id="zones">
       <button class="zone-btn on" data-z="all">All zones</button>
       <button class="zone-btn" data-z="north">North</button>
@@ -50,21 +36,33 @@
       <button class="zone-btn" data-z="east">East</button>
       <button class="zone-btn" data-z="thonburi">Thonburi side</button>
     </div>
-    <div class="zone-note muted">Zones are an approximate grouping of BMA districts for browsing convenience, not an official boundary.</div>
-  </section>
 
-  <section class="list-wrap">
-    <div id="roadList" class="road-list"><div class="loading">Fetching live sensor readings…</div></div>
-  </section>
+    <section class="kpis" id="kpis" aria-label="Summary counts">
+      <div class="kpi"><div class="v" id="kSevere">–</div><div class="l">severe</div></div>
+      <div class="kpi"><div class="v" id="kFlood">–</div><div class="l">flooded</div></div>
+      <div class="kpi"><div class="v" id="kSlight">–</div><div class="l">slight</div></div>
+      <div class="kpi muted"><div class="v" id="kNormal">–</div><div class="l">clear</div></div>
+    </section>
 
-  <footer class="foot">
-    <div class="foot-title">Data &amp; sources</div>
-    <p>Live sensor readings and locations: <a href="https://floodbangkok.bangkok.go.th" target="_blank" rel="noopener">floodbangkok.bangkok.go.th</a> — Bangkok Metropolitan Administration road-flood water-level sensor system (public API, refreshed here every 3 minutes).<br>
-    Road, district and location names are machine-translated from the source Thai text and may not match official English signage exactly.<br>
-    Basemap © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors.</p>
-    <p class="muted">Unofficial. Data may be delayed, missing or wrong — follow official BMA / TMD / DDPM warnings. BMA flood hotline <strong>1555</strong>.</p>
-  </footer>
+    <section class="list-wrap">
+      <div class="list-hdr">Roads with standing water <span class="muted" id="roadCount"></span></div>
+      <div id="roadList" class="road-list"><div class="loading">Fetching live sensor readings…</div></div>
+    </section>
 
+    <footer class="foot">
+      <p>Live readings: <a href="https://floodbangkok.bangkok.go.th" target="_blank" rel="noopener">floodbangkok.bangkok.go.th</a> (BMA road water-level sensors, refreshed here every 3&nbsp;min). Road geometry: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors, via the Overpass API.<br>
+      Road/district names are machine-translated from the source Thai and may not match official signage.</p>
+      <p class="muted">Unofficial — not affiliated with BMA. Data may be delayed, missing or wrong. BMA flood hotline <strong>1555</strong>.</p>
+    </footer>
+  </aside>
+
+  <div class="legend" aria-label="Severity legend">
+    <div class="lg-item"><i class="sw" style="--c:var(--sev-severe)"></i>Severe &gt;15cm</div>
+    <div class="lg-item"><i class="sw" style="--c:var(--sev-flood)"></i>Flooded 10–15cm</div>
+    <div class="lg-item"><i class="sw" style="--c:var(--sev-slight)"></i>Slight 5–10cm</div>
+    <div class="lg-item"><i class="sw" style="--c:var(--sev-normal)"></i>Clear</div>
+    <div class="lg-item muted" id="geomStatus"></div>
+  </div>
 </div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 <script src="bma-dictionary.js"></script>
