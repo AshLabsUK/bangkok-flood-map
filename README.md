@@ -18,3 +18,12 @@ All data is fetched live in the visitor's browser from public, no-login feeds (n
 Road colours are derived only from the text of each report: **red** = “ผ่านไม่ได้”/not passable or depth > 20 cm (or knee/shin-deep), **yellow** = passable / ≤ 20 cm / depth not stated, **green** = source explicitly says water receded. Roads without a report are not coloured.
 
 Not affiliated with any agency. Follow official warnings from BMA, TMD and DDPM. BMA hotline **1555**.
+
+## English road-sensor dashboard (`bma-monitor.html`)
+
+A second, self-contained page — [`bma-monitor.html`](bma-monitor.html) — built for English-speaking readers. Instead of the iTIC/Longdo/Traffy layers above, it fetches directly from BMA's own official road water-level sensor network (the same feed behind [floodbangkok.bangkok.go.th](https://floodbangkok.bangkok.go.th)):
+
+- `sensor_profile` — ~250 fixed sensors with road, district, lat/long
+- `flood_notification` — live depth readings (cm) per sensor
+
+Road and district names are machine-translated from the source Thai (see `bma-dictionary.js`); anything not in the curated dictionary is left in the original Thai rather than guessed. Refreshes every 3 minutes client-side, no build step.
