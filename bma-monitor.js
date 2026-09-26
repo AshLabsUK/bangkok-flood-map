@@ -289,13 +289,37 @@
   const markerByCode = new Map(); // code -> Leaflet circleMarker
 
   let radarLayerGroup, rainLayerGroup, wlLayerGroup;
+  let baseTileLayer, labelTileLayer;
+  const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/";
+
+  function isDarkMode() {
+    return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  }
+
+  function applyBasemap() {
+    const dark = isDarkMode();
+    if (baseTileLayer) map.removeLayer(baseTileLayer);
+    if (labelTileLayer) map.removeLayer(labelTileLayer);
+    const base = dark ? "World_Dark_Gray_Base" : "World_Light_Gray_Base";
+    const ref = dark ? "World_Dark_Gray_Reference" : "World_Light_Gray_Reference";
+    baseTileLayer = L.tileLayer(ESRI + base + "/MapServer/tile/{z}/{y}/{x}", {
+      maxNativeZoom: 16, maxZoom: 19,
+      attribution: "Basemap &copy; Esri, HERE, Garmin, &copy; OpenStreetMap contributors",
+    }).addTo(map);
+    baseTileLayer.bringToBack();
+    labelTileLayer = L.tileLayer(ESRI + ref + "/MapServer/tile/{z}/{y}/{x}", {
+      pane: "labels", maxNativeZoom: 16, maxZoom: 19,
+    }).addTo(map);
+  }
 
   function initMap() {
     map = L.map("map", { zoomControl: true, attributionControl: true }).setView([13.75, 100.55], 12);
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: "&copy; OpenStreetMap contributors",
-      maxZoom: 19,
-    }).addTo(map);
+    map.createPane("labels").style.zIndex = 450;
+    map.getPane("labels").style.pointerEvents = "none";
+    applyBasemap();
+    if (window.matchMedia) {
+      window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyBasemap);
+    }
     radarLayerGroup = L.layerGroup().addTo(map); // below sensors
     segLayer = L.layerGroup().addTo(map);
     markerLayer = L.layerGroup().addTo(map);

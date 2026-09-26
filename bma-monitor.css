@@ -29,10 +29,6 @@ a { color: var(--accent); }
 
 #app { position: relative; height: 100vh; height: 100dvh; overflow: hidden; }
 #map { position: absolute; inset: 0; background: var(--surface-2); }
-.leaflet-tile-pane { filter: none; }
-@media (prefers-color-scheme: dark) { .leaflet-tile-pane { filter: brightness(.55) invert(1) contrast(.85) hue-rotate(200deg) saturate(.55); } }
-:root[data-theme="dark"] .leaflet-tile-pane { filter: brightness(.55) invert(1) contrast(.85) hue-rotate(200deg) saturate(.55); }
-:root[data-theme="light"] .leaflet-tile-pane { filter: none; }
 .leaflet-popup-content-wrapper { background: var(--surface); color: var(--text); }
 .leaflet-popup-tip { background: var(--surface); }
 .leaflet-popup-content { font-family: var(--font-ui); font-size: .85rem; line-height: 1.4; }
