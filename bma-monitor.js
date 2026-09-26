@@ -448,13 +448,27 @@
       if (lyRadar.checked) { map.addLayer(radarLayerGroup); document.getElementById("radarCtl").classList.toggle("hidden", !radarFrames.length); }
       else { map.removeLayer(radarLayerGroup); document.getElementById("radarCtl").classList.add("hidden"); }
     });
+    const setLoading = (id, on) => {
+      const label = document.querySelector(`#${id} + span`);
+      if (label) label.textContent = label.textContent.replace(/ \(loading…\)$/, "") + (on ? " (loading…)" : "");
+    };
     lyRain.addEventListener("change", () => {
-      if (lyRain.checked) { map.addLayer(rainLayerGroup); if (!rainLayerGroup.getLayers().length) loadRain(); }
-      else map.removeLayer(rainLayerGroup);
+      if (lyRain.checked) {
+        map.addLayer(rainLayerGroup);
+        if (!rainLayerGroup.getLayers().length) {
+          setLoading("lyRain", true);
+          loadRain().finally(() => setLoading("lyRain", false));
+        }
+      } else map.removeLayer(rainLayerGroup);
     });
     lyWl.addEventListener("change", () => {
-      if (lyWl.checked) { map.addLayer(wlLayerGroup); if (!wlLayerGroup.getLayers().length) loadWL(); }
-      else map.removeLayer(wlLayerGroup);
+      if (lyWl.checked) {
+        map.addLayer(wlLayerGroup);
+        if (!wlLayerGroup.getLayers().length) {
+          setLoading("lyWl", true);
+          loadWL().finally(() => setLoading("lyWl", false));
+        }
+      } else map.removeLayer(wlLayerGroup);
     });
 
     document.getElementById("radarPlay").addEventListener("click", () => {
