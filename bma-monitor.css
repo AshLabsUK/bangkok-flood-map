@@ -98,6 +98,11 @@ h1 { font-size: 1.12rem; font-weight: 750; margin: 0; letter-spacing: -.01em; te
 .road-card .rc-name { font-weight: 700; font-size: .87rem; }
 .road-card .rc-peak { font-family: var(--font-mono); font-weight: 700; font-variant-numeric: tabular-nums; color: var(--sev); font-size: .82rem; white-space: nowrap; }
 .road-card .rc-district { color: var(--muted); font-size: .74rem; margin-top: .1rem; }
+.rc-sources { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .35rem; }
+.rc-sources:empty { display: none; }
+.src-tag { font-size: .62rem; padding: .1rem .4rem; border-radius: 999px; background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
+.src-tag.src-itic { color: var(--sev-flood); border-color: var(--sev-flood); }
+.src-tag.src-traffy { color: var(--sev-slight); border-color: var(--sev-slight); }
 
 .foot { padding: .8rem 1rem 1rem; font-size: .68rem; color: var(--muted); border-top: 1px solid var(--border); flex: none; }
 .foot p { margin: 0 0 .4rem; }

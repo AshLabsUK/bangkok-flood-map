@@ -53,72 +53,191 @@
   const SEV_LABEL = { severe: "Severe", flood: "Flooded", slight: "Slight", normal: "Clear" };
   const SEV_COLOR = { severe: "#e0536a", flood: "#f0784f", slight: "#f0b93b", normal: "#34d399" };
   const SEV_WEIGHT = { severe: 8, flood: 6, slight: 5, normal: 3 };
+  const SEV_RANK = { severe: 3, flood: 2, slight: 1, normal: 0 };
+  const SOURCE_LABEL = { bma: "BMA sensor", itic: "Agency / iTIC report", traffy: "Citizen report (Traffy, unverified)" };
 
   // ---------- BMA data fetch ----------
 
-  async function fetchJSON(url) {
-    const res = await fetch(url, { headers: { Accept: "application/json" } });
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    return res.json();
+  async function fetchJSON(url, timeoutMs) {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), timeoutMs || 20000);
+    try {
+      const res = await fetch(url, { headers: { Accept: "application/json" }, signal: ctl.signal });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return await res.json();
+    } catch (e) {
+      throw new Error(e.name === "AbortError" ? "timed out" : e.message || "network error");
+    } finally {
+      clearTimeout(t);
+    }
   }
 
   async function loadSensorData() {
-    const [sensorsRes, notifRes] = await Promise.all([
-      fetchJSON(API + "sensor_profile?limit=-1"),
-      fetchJSON(
-        API +
-          "flood_notification?limit=1500&page=0&sort=-date_created&fields=sensor_profile,value,heighest_value,date_created"
-      ),
-    ]);
-    const sensors = sensorsRes.data || [];
-    const notifs = notifRes.data || [];
+    try {
+      const [sensorsRes, notifRes] = await Promise.all([
+        fetchJSON(API + "sensor_profile?limit=-1"),
+        fetchJSON(
+          API +
+            "flood_notification?limit=1500&page=0&sort=-date_created&fields=sensor_profile,value,heighest_value,date_created"
+        ),
+      ]);
+      const sensors = sensorsRes.data || [];
+      const notifs = notifRes.data || [];
 
-    const latestBySensor = new Map();
-    for (const n of notifs) {
-      if (!latestBySensor.has(n.sensor_profile)) latestBySensor.set(n.sensor_profile, n);
+      const latestBySensor = new Map();
+      for (const n of notifs) {
+        if (!latestBySensor.has(n.sensor_profile)) latestBySensor.set(n.sensor_profile, n);
+      }
+
+      let latestTs = null;
+      const points = sensors
+        .filter((s) => (s.code || "").startsWith("FL.") && s.lat && s.long)
+        .map((s) => {
+          const latest = latestBySensor.get(s.id);
+          const cm = latest ? parseFloat(latest.value) : 0;
+          if (latest && latest.date_created) {
+            if (!latestTs || latest.date_created > latestTs) latestTs = latest.date_created;
+          }
+          return {
+            id: s.id,
+            code: s.code,
+            roadTh: s.road,
+            road: translateRoad(s.road),
+            districtTh: s.district,
+            district: translateDistrict(s.district),
+            location: translateLocation(s.name, s.road),
+            lat: s.lat,
+            lng: s.long,
+            cm: isNaN(cm) ? 0 : cm,
+            sev: severityOf(isNaN(cm) ? 0 : cm),
+            source: "bma",
+          };
+        });
+
+      return { points, latestTs, ok: true };
+    } catch (err) {
+      console.warn("BMA sensor feed unavailable", err);
+      return { points: [], latestTs: null, ok: false, error: err };
     }
+  }
 
-    let latestTs = null;
-    const points = sensors
-      .filter((s) => (s.code || "").startsWith("FL.") && s.lat && s.long)
-      .map((s) => {
-        const latest = latestBySensor.get(s.id);
-        const cm = latest ? parseFloat(latest.value) : 0;
-        if (latest && latest.date_created) {
-          if (!latestTs || latest.date_created > latestTs) latestTs = latest.date_created;
-        }
-        return {
-          id: s.id,
-          code: s.code,
-          roadTh: s.road,
-          road: translateRoad(s.road),
-          districtTh: s.district,
-          district: translateDistrict(s.district),
-          location: translateLocation(s.name, s.road),
-          lat: s.lat,
-          lng: s.long,
-          cm: isNaN(cm) ? 0 : cm,
-          sev: severityOf(isNaN(cm) ? 0 : cm),
-        };
-      });
+  // ---------- fallback sources: agency/iTIC flood reports + Traffy Fondue citizen reports ----------
+  // Same public feeds this repo's original map (longdo-live-map.html / app.js) uses. Kept live here
+  // too so the page still shows *something* when BMA's own sensor API is down (as it often is during
+  // an active flood event, when it's under the most load).
 
-    return { points, latestTs };
+  const FALLBACK_URLS = {
+    events: "https://event.longdo.com/feed/json",
+    traffy: "https://publicapi.traffy.in.th/share/teamchadchart/search?limit=500",
+  };
+  const BKK_AREA_BOX = { s: 13.45, n: 14.15, w: 100.25, e: 100.95 };
+  const inBkkArea = (la, lo) => la >= BKK_AREA_BOX.s && la <= BKK_AREA_BOX.n && lo >= BKK_AREA_BOX.w && lo <= BKK_AREA_BOX.e;
+  const SEV_FROM_LEVEL = { red: "severe", yellow: "flood", green: "normal" };
+
+  function classifyReportText(text) {
+    const t = String(text || "");
+    const out = { level: "yellow", cm: null, reason: "Flooding reported; depth not stated" };
+    let maxcm = null;
+    const re = /(\d{1,3})(?:\s*[-–~ถึง]+\s*(\d{1,3}))?\s*(?:ซ\.?\s?ม\.?|ซม|เซน(?:ติเมตร)?|cm)/gi;
+    let m;
+    while ((m = re.exec(t))) {
+      const v = Math.max(+m[1], m[2] ? +m[2] : 0);
+      if (v > 0 && v < 300) maxcm = Math.max(maxcm || 0, v);
+    }
+    if (/ผ่านไม่ได้|ไม่สามารถผ่าน|ไม่สามารถสัญจร|สัญจรไม่ได้|ผ่านไม่สะดวก|ปิดการจราจร|ปิดถนน|impassable|not passable/i.test(t))
+      return Object.assign(out, { level: "red", cm: maxcm, reason: "Reported not passable" + (maxcm ? ` (~${maxcm} cm)` : "") });
+    if (/น้ำลด(ลง)?แล้ว|ระบายแล้ว|ระบายเสร็จ|แห้งแล้ว|กลับสู่ภาวะปกติ|ผ่านได้ตามปกติ|receded/i.test(t))
+      return Object.assign(out, { level: "green", reason: "Source reports water receded / normal" });
+    if (maxcm != null)
+      return Object.assign(out, maxcm > 20 ? { level: "red", cm: maxcm, reason: `Depth ~${maxcm} cm (over 20 cm)` } : { level: "yellow", cm: maxcm, reason: `Depth ~${maxcm} cm` });
+    if (/เข่า|เอว|หน้าอก|หน้าแข้ง|หน้าขา|ต้นขา|ถึงก้น|knee|waist|thigh/i.test(t))
+      return Object.assign(out, { level: "red", reason: "Described as shin/knee-deep or more" });
+    if (/ข้อเท้า|ตาตุ่ม|ankle/i.test(t)) return Object.assign(out, { level: "yellow", reason: "Described as ankle-deep" });
+    return out;
+  }
+
+  async function loadEvents() {
+    try {
+      const d = await fetchJSON(FALLBACK_URLS.events);
+      if (!Array.isArray(d)) throw new Error("unexpected iTIC response");
+      const now = Date.now();
+      const points = d
+        .filter((e) => e.type === "6" || e.icon === "flood")
+        .map((e, i) => {
+          const la = parseFloat(e.latitude), lo = parseFloat(e.longitude);
+          const start = bkkDate(e.start), stop = bkkDate(e.stop);
+          const c = classifyReportText([e.title, e.description].join(" "));
+          return { e, i, la, lo, start, stop, c };
+        })
+        .filter((x) => x.la && x.lo && inBkkArea(x.la, x.lo) && (!x.stop || x.stop.getTime() >= now) && (!x.start || x.start.getTime() <= now + 36e5) && x.c.level !== "green")
+        .map((x) => ({
+          code: "ITIC-" + (x.e.id || x.i),
+          road: x.e.title.replace(/^น้ำท่วม\s*/, ""),
+          district: "",
+          location: (x.e.description || "").slice(0, 200) + " — " + x.c.reason,
+          lat: x.la,
+          lng: x.lo,
+          cm: x.c.cm,
+          sev: SEV_FROM_LEVEL[x.c.level] || "flood",
+          source: "itic",
+        }));
+      return { points, ok: true };
+    } catch (err) {
+      console.warn("iTIC/Longdo road-report feed unavailable", err);
+      return { points: [], ok: false, error: err };
+    }
+  }
+
+  async function loadTraffy() {
+    try {
+      const d = await fetchJSON(FALLBACK_URLS.traffy);
+      if (!d || !Array.isArray(d.results)) throw new Error("unexpected Traffy response");
+      const cutoff = Date.now() - 3 * 3600 * 1000;
+      const floodRe = /ท่วม|น้ำขัง|นำ้ท่วม|น้ำรอระบาย|รอการระบาย|flood/i;
+      const points = d.results
+        .map((r) => {
+          const t = r.timestamp ? new Date(String(r.timestamp).replace(" ", "T").replace(/(\.\d{3})\d*/, "$1").replace(/\+00$/, "Z")) : null;
+          const lo = r.coords ? parseFloat(r.coords[0]) : null;
+          const la = r.coords ? parseFloat(r.coords[1]) : null;
+          return { r, t, la, lo };
+        })
+        .filter((x) => x.la && x.lo && x.t && !isNaN(x.t) && x.t.getTime() >= cutoff && inBkkArea(x.la, x.lo) && floodRe.test(x.r.description || "") && x.r.state !== "เสร็จสิ้น")
+        .map((x) => ({ ...x, c: classifyReportText(x.r.description) }))
+        .filter((x) => x.c.level !== "green")
+        .map((x) => ({
+          code: "TRAFFY-" + x.r.ticket_id,
+          road: (x.r.address || x.r.description || "").slice(0, 80),
+          district: "",
+          location: (x.r.description || "").slice(0, 200) + " — " + x.c.reason + " (unverified citizen report)",
+          lat: x.la,
+          lng: x.lo,
+          cm: x.c.cm,
+          sev: SEV_FROM_LEVEL[x.c.level] || "flood",
+          source: "traffy",
+        }));
+      return { points, ok: true };
+    } catch (err) {
+      console.warn("Traffy Fondue feed unavailable", err);
+      return { points: [], ok: false, error: err };
+    }
   }
 
   function groupByRoad(points) {
     const byRoad = new Map();
     for (const p of points) {
       const key = p.road + "|" + p.district;
-      if (!byRoad.has(key)) byRoad.set(key, { road: p.road, district: p.district, points: [] });
-      byRoad.get(key).points.push(p);
+      if (!byRoad.has(key)) byRoad.set(key, { road: p.road, district: p.district, points: [], sources: new Set() });
+      const g = byRoad.get(key);
+      g.points.push(p);
+      g.sources.add(p.source);
     }
     const roads = [...byRoad.values()].map((r) => {
-      r.points.sort((a, b) => b.cm - a.cm);
-      r.peak = r.points[0].cm;
-      r.sev = severityOf(r.peak);
+      r.points.sort((a, b) => SEV_RANK[b.sev] - SEV_RANK[a.sev] || (b.cm || 0) - (a.cm || 0));
+      r.sev = r.points[0].sev;
+      r.peak = r.points[0].cm; // may be null for text-classified (iTIC/Traffy) reports
       return r;
     });
-    roads.sort((a, b) => b.peak - a.peak);
+    roads.sort((a, b) => SEV_RANK[b.sev] - SEV_RANK[a.sev] || (b.peak || 0) - (a.peak || 0));
     return roads;
   }
 
@@ -514,10 +633,14 @@
     setInterval(() => { if (map.hasLayer(wlLayerGroup)) loadWL(); }, 10 * 60 * 1000);
   }
 
+  function depthLabel(p) {
+    return p.cm != null && p.cm > 0 ? p.cm.toFixed(0) + " cm" : SEV_LABEL[p.sev];
+  }
+
   function popupHTML(p) {
-    return `<strong>${escapeHtml(p.road)}</strong><br>${escapeHtml(p.location) || "—"}<br>${escapeHtml(
-      p.district
-    )} · <strong>${p.cm > 0 ? p.cm.toFixed(0) + " cm" : "clear"}</strong> (${SEV_LABEL[p.sev]})<br><span style="opacity:.6">${escapeHtml(
+    return `<strong>${escapeHtml(p.road)}</strong><br>${escapeHtml(p.location) || "—"}<br>${
+      p.district ? escapeHtml(p.district) + " · " : ""
+    }<strong>${depthLabel(p)}</strong> (${SEV_LABEL[p.sev]})<br><span style="opacity:.6">${escapeHtml(SOURCE_LABEL[p.source] || p.source)} · ${escapeHtml(
       p.code
     )}</span>`;
   }
@@ -529,7 +652,7 @@
     markerByCode.clear();
     for (const p of points) {
       const m = L.circleMarker([p.lat, p.lng], {
-        radius: p.sev === "normal" ? 2.5 : 4 + Math.min(p.cm, 40) / 10,
+        radius: p.sev === "normal" ? 2.5 : 4 + Math.min(p.cm || 12, 40) / 10,
         color: "#04141c",
         weight: p.sev === "normal" ? 0 : 1,
         fillColor: SEV_COLOR[p.sev],
@@ -595,14 +718,17 @@
 
   let roadsData = [];
   function roadCardHTML(r, idx) {
+    const sourceTags = [...r.sources].map((s) => `<span class="src-tag src-${s}">${escapeHtml(SOURCE_LABEL[s] || s)}</span>`).join("");
+    const peakLabel = r.peak != null && r.peak > 0 ? r.peak.toFixed(0) + " cm" : SEV_LABEL[r.sev];
     return `
     <article class="road-card" style="--sev:${SEV_COLOR[r.sev]}" data-idx="${idx}" data-zone="${DISTRICT_ZONE[r.district] || ""}"
       data-search="${escapeHtml((r.road + " " + r.district).toLowerCase())}" tabindex="0" role="button">
       <div class="rc-top">
         <div class="rc-name">${escapeHtml(r.road)}</div>
-        <div class="rc-peak">${r.peak > 0 ? r.peak.toFixed(0) + " cm" : SEV_LABEL.normal}</div>
+        <div class="rc-peak">${peakLabel}</div>
       </div>
-      <div class="rc-district">${escapeHtml(r.district)} · ${r.points.length} sensor${r.points.length > 1 ? "s" : ""}</div>
+      <div class="rc-district">${r.district ? escapeHtml(r.district) + " · " : ""}${r.points.length} report${r.points.length > 1 ? "s" : ""}</div>
+      <div class="rc-sources">${sourceTags}</div>
     </article>`;
   }
 
@@ -670,36 +796,45 @@
   // ---------- boot ----------
 
   async function tick(pointsByCode) {
-    try {
-      const { points, latestTs } = await loadSensorData();
-      const roads = groupByRoad(points);
-      document.getElementById("asOf").textContent = formatAsOf(latestTs);
-      renderKPIs(points);
-      renderList(roads);
+    const [bmaR, iticR, traffyR] = await Promise.all([loadSensorData(), loadEvents(), loadTraffy()]);
+    const points = [...bmaR.points, ...iticR.points, ...traffyR.points];
+    const roads = groupByRoad(points);
 
-      pointsByCode.clear();
-      for (const p of points) pointsByCode.set(p.code, p);
+    const statusParts = [bmaR.ok ? formatAsOf(bmaR.latestTs) : "BMA sensor feed unavailable"];
+    if (!iticR.ok) statusParts.push("iTIC feed unavailable");
+    if (!traffyR.ok) statusParts.push("Traffy feed unavailable");
+    document.getElementById("asOf").textContent = statusParts.join(" · ");
 
-      if (segByCode.size === 0) {
-        renderMarkersAndSegments(points);
-      } else {
-        restyleForSeverity(points);
-        // draw markers for any brand-new sensors we haven't seen yet
-        for (const p of points) if (!markerByCode.has(p.code)) {
-          const m = L.circleMarker([p.lat, p.lng], { radius: 3, color: "#04141c", weight: 0, fillColor: SEV_COLOR[p.sev], fillOpacity: 0.7 });
-          m.bindPopup(popupHTML(p));
-          m.addTo(markerLayer);
-          markerByCode.set(p.code, m);
-        }
-      }
-      return points;
-    } catch (err) {
-      document.getElementById("asOf").textContent = "feed unavailable";
+    if (!points.length) {
       document.getElementById("roadList").innerHTML =
-        '<div class="loading">Could not reach the BMA sensor feed right now. It may be temporarily down — try reloading in a minute.</div>';
-      console.error(err);
-      return [];
+        '<div class="loading">All road-flood feeds (BMA, iTIC, Traffy) are unreachable right now. Try reloading in a minute.</div>';
     }
+    renderKPIs(points);
+    renderList(roads);
+
+    const prevCodes = new Set(pointsByCode.keys());
+    pointsByCode.clear();
+    for (const p of points) pointsByCode.set(p.code, p);
+
+    if (segByCode.size === 0 && markerByCode.size === 0) {
+      renderMarkersAndSegments(points);
+    } else {
+      restyleForSeverity(points);
+      // draw markers for any brand-new reports we haven't seen yet
+      for (const p of points) if (!markerByCode.has(p.code)) {
+        const m = L.circleMarker([p.lat, p.lng], { radius: 3, color: "#04141c", weight: 0, fillColor: SEV_COLOR[p.sev], fillOpacity: 0.7 });
+        m.bindPopup(popupHTML(p));
+        m.addTo(markerLayer);
+        markerByCode.set(p.code, m);
+      }
+      // iTIC/Traffy reports can expire between ticks (BMA sensor codes are permanent, so leave those alone)
+      for (const code of prevCodes) {
+        if (pointsByCode.has(code) || code.startsWith("FL.")) continue;
+        const m = markerByCode.get(code);
+        if (m) { markerLayer.removeLayer(m); markerByCode.delete(code); }
+      }
+    }
+    return points;
   }
 
   document.addEventListener("DOMContentLoaded", async () => {
