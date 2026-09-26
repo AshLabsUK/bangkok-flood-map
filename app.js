@@ -44,7 +44,7 @@
     traffy: { name: 'Citizen flood reports – Traffy Fondue (BMA)', link: 'https://fondue.traffy.in.th', cadence: 'real-time' },
     rain: { name: 'Rainfall stations – ThaiWater (HII, RID, TMD, BMA…)', link: 'https://www.thaiwater.net', cadence: '10 min – daily' },
     wl: { name: 'Water level stations – ThaiWater (HII, RID…)', link: 'https://www.thaiwater.net', cadence: '10 min – hourly' },
-    cams: { name: 'Traffic cameras – Longdo / iTIC (DOH, iTIC)', link: 'https://traffic.longdo.com', cadence: 'live video' },
+    cams: { name: 'Traffic cameras – iTIC Foundation via Longdo (DOH & iTIC cameras)', link: 'https://camera.longdo.com', cadence: 'live video, list re-checked hourly' },
     gistda: { name: 'Satellite flood extent – GISTDA', link: 'https://disaster.gistda.or.th', cadence: 'daily', status: 'fail', msg: 'Not embedded: GISTDA API/WMS requires an API key. Open the official viewer.' }
   };
   function setFeed(k, status, msg, dataTime) { Object.assign(FEEDS[k], { status, msg, dataTime, fetched: status === 'ok' ? new Date() : FEEDS[k].fetched }); renderFeeds(); }
@@ -279,50 +279,67 @@
   }
 
   // ---------- cameras ----------
+  // Only iTIC's camerai1 HTTPS relay was verified to play in browsers on this page (CORS *, valid live HLS).
+  // Each camera is re-checked in the visitor's browser (playlist + live segment + freshness) before it is shown,
+  // and a camera whose stream fails when opened is removed from the map.
+  const CAM_HOSTS = ['camerai1.iticfoundation.org'];
   let activeHls = null;
+  async function probeCam(url) {
+    const ctl = new AbortController(); const tm = setTimeout(() => ctl.abort(), 12000);
+    try {
+      const rd = async (u) => { const r = await fetch(u, { signal: ctl.signal, cache: 'no-store' }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); };
+      let u = url, txt = await rd(u); if (!/^#EXTM3U/.test(txt.trim())) return false;
+      let segs = txt.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && l[0] !== '#');
+      if (segs.length && /\.m3u8(\?|$)/.test(segs[0])) { u = new URL(segs[0], u).href; txt = await rd(u); segs = txt.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && l[0] !== '#'); }
+      if (!segs.length) return false;
+      const r = await fetch(new URL(segs[segs.length - 1], u).href, { signal: ctl.signal, cache: 'no-store' }); if (!r.ok || !r.body) return false;
+      const lm = r.headers.get('Last-Modified');
+      const reader = r.body.getReader(); const { value } = await reader.read(); reader.cancel().catch(() => {});
+      if (!value || value[0] !== 0x47) return false; // MPEG-TS sync byte
+      if (lm && Date.now() - new Date(lm) > 10 * 60 * 1000) return false; // stream stuck (segment older than 10 min)
+      return true;
+    } catch (e) { return false; } finally { clearTimeout(tm); }
+  }
   async function loadCams() {
     setFeed('cams', 'loading');
     try {
       const d = await getJSON(URLS.cams, 45000); if (!Array.isArray(d)) throw new Error('unexpected response');
-      const list = d.map((c) => ({ c, la: num(c.latitude), lo: num(c.longitude) })).filter((x) => x.la && x.lo && inBox(x.la, x.lo) && /^https:\/\//.test(x.c.hls_url || '') && !/tempsus/.test(x.c.hls_url));
-      S.cams = list; setFeed('cams', 'ok', list.length + ' cameras with public HTTPS streams in view area');
+      const cand = d.map((c) => ({ c, la: num(c.latitude), lo: num(c.longitude) })).filter((x) => x.la && x.lo && inBox(x.la, x.lo) && /^https:\/\//.test(x.c.hls_url || '') && CAM_HOSTS.includes(new URL(x.c.hls_url).host));
+      const ok = await Promise.all(cand.map((x) => probeCam(x.c.hls_url)));
+      const list = cand.filter((x, i) => ok[i]);
+      if (!list.length) throw new Error('no camera stream responded');
+      S.cams = list; setFeed('cams', 'ok', list.length + ' live streams verified in your browser (offline cameras hidden)', new Date());
     } catch (err) { S.cams = null; setFeed('cams', 'fail', err.message); }
     drawCams(); drawCamsNear();
   }
   const camIcon = L.divIcon({ className: '', iconSize: [18, 18], iconAnchor: [9, 9], popupAnchor: [0, -8], html: '<div class="camicon" style="width:18px;height:18px">▶</div>' });
   function camHtml(x) {
-    const c = x.c; const snap = /X\.X\.X\.X/.test(c.imgurl || '') ? '' : (c.imgurl || '');
+    const c = x.c;
     return `<div class="pp" style="width:300px;max-width:100%"><div class="m">${esc(c.organization || '')} camera · ${esc(c.camid)}</div><h3>${esc(c.title)}</h3>
       <video muted autoplay playsinline controls></video>
       <div class="m camstatus">Connecting to live stream…</div>
-      <div class="m">Live video from ${esc(c.sponsertext || c.organization || 'iTIC')} via iTIC Foundation / Longdo. <a href="https://traffic.longdo.com" target="_blank" rel="noopener">Official viewer</a></div>
-      <div hidden class="snapwrap" data-snap="${esc(snap)}"></div></div>`;
+      <div class="m">Live video from ${esc(c.sponsertext || c.organization || 'iTIC')} via iTIC Foundation / Longdo.</div></div>`;
   }
-  function stopHls() { if (activeHls) { try { activeHls.destroy(); } catch (e) {} activeHls = null; } if (snapTimer) { clearInterval(snapTimer); snapTimer = null; } }
-  let snapTimer = null;
+  function stopHls() { if (activeHls) { try { activeHls.destroy(); } catch (e) {} activeHls = null; } }
+  function toast(msg) { const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg; $('mapwrap').appendChild(t); setTimeout(() => t.remove(), 4000); }
+  function dropCam(x) { // stream failed in this browser: hide the camera instead of showing an error
+    stopHls(); if (x.marker) { x.marker.closePopup(); layers.cams.removeLayer(x.marker); }
+    if (S.cams) { S.cams = S.cams.filter((y) => y !== x); setFeed('cams', 'ok', S.cams.length + ' live streams verified in your browser (offline cameras hidden)', new Date()); }
+    drawCamsNear(); toast('That camera stopped streaming and was hidden.');
+  }
   function startStream(el, x) {
     stopHls();
-    const v = el.querySelector('video'), st = el.querySelector('.camstatus'), url = x.c.hls_url, snap = el.querySelector('.snapwrap').dataset.snap;
-    const fail = (why) => {
-      v.remove();
-      if (snap) { // fall back to a periodically refreshed snapshot, if the camera provides one
-        st.innerHTML = 'Live stream unavailable (' + esc(why) + '). Trying snapshot (refreshes every 60 s)…';
-        const img = new Image(); img.className = 'ph'; img.referrerPolicy = 'no-referrer'; img.alt = 'camera snapshot';
-        const load = () => { img.src = snap + (snap.includes('?') ? '&' : '?') + '_t=' + Date.now(); };
-        img.onload = () => { st.textContent = 'Snapshot ' + fmtT(new Date()) + ' (auto-refresh 60 s)'; };
-        img.onerror = () => { st.innerHTML = 'Camera image unavailable from this network right now. Try the official viewer.'; };
-        st.before(img); load(); snapTimer = setInterval(load, 60000);
-      } else st.innerHTML = 'Live stream unavailable right now (' + esc(why) + '). Try the official viewer.';
-    };
-    const ok = () => { st.textContent = 'LIVE · streaming'; };
+    const v = el.querySelector('video'), st = el.querySelector('.camstatus'), url = x.c.hls_url;
+    let playing = false; const ok = () => { playing = true; st.textContent = 'LIVE · streaming'; };
+    const guard = setTimeout(() => { if (!playing && el.isConnected) dropCam(x); }, 20000);
     if (window.Hls && Hls.isSupported()) {
       const h = new Hls({ lowLatencyMode: true, manifestLoadingMaxRetry: 1, levelLoadingMaxRetry: 1, fragLoadingMaxRetry: 1 }); activeHls = h;
-      h.on(Hls.Events.ERROR, (e, data) => { if (data.fatal) { stopHls(); fail(data.details || 'stream error'); } });
+      h.on(Hls.Events.ERROR, (e, data) => { if (data.fatal) { clearTimeout(guard); dropCam(x); } });
       h.on(Hls.Events.FRAG_BUFFERED, ok);
       h.loadSource(url); h.attachMedia(v); v.play().catch(() => {});
     } else if (v.canPlayType('application/vnd.apple.mpegurl')) {
-      v.src = url; v.addEventListener('playing', ok, { once: true }); v.addEventListener('error', () => fail('stream error'), { once: true }); v.play().catch(() => {});
-    } else fail('browser cannot play HLS');
+      v.src = url; v.addEventListener('playing', ok, { once: true }); v.addEventListener('error', () => { clearTimeout(guard); dropCam(x); }, { once: true }); v.play().catch(() => {});
+    } else { clearTimeout(guard); st.textContent = 'This browser cannot play live video.'; }
   }
   function drawCams() {
     layers.cams.clearLayers(); if (!S.cams) return;
@@ -334,7 +351,7 @@
   }
   function drawCamsNear() {
     const el = $('camNear');
-    if (!S.cams) { el.innerHTML = '<div class="muted">Camera feed unavailable.</div>'; return; }
+    if (!S.cams) { el.innerHTML = '<div class="muted">No verified live camera stream right now.</div>'; return; }
     if (!S.events) { el.innerHTML = '<div class="muted">Waiting for road report feed…</div>'; return; }
     const pairs = []; const seen = new Set();
     S.events.filter((x) => x.c.level !== 'green').forEach((ev) => {
