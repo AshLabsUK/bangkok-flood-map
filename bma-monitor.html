@@ -50,7 +50,7 @@
     </section>
 
     <footer class="foot">
-      <p>Live readings: <a href="https://floodbangkok.bangkok.go.th" target="_blank" rel="noopener">floodbangkok.bangkok.go.th</a> (BMA road water-level sensors, refreshed here every 3&nbsp;min). Road geometry: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors, via the Overpass API.<br>
+      <p>Live readings: <a href="https://floodbangkok.bangkok.go.th" target="_blank" rel="noopener">floodbangkok.bangkok.go.th</a> (BMA road water-level sensors, refreshed here every 3&nbsp;min). Road geometry: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors, via the Overpass API. Rain radar: <a href="https://www.rainviewer.com" target="_blank" rel="noopener">RainViewer</a>. Rain gauges &amp; river/canal levels: <a href="https://www.thaiwater.net" target="_blank" rel="noopener">ThaiWater</a> (HII, RID, TMD, BMA…).<br>
       Road/district names are machine-translated from the source Thai and may not match official signage.</p>
       <p class="muted">Unofficial — not affiliated with BMA. Data may be delayed, missing or wrong. BMA flood hotline <strong>1555</strong>.</p>
     </footer>
@@ -62,6 +62,19 @@
     <div class="lg-item"><i class="sw" style="--c:var(--sev-slight)"></i>Slight 5–10cm</div>
     <div class="lg-item"><i class="sw" style="--c:var(--sev-normal)"></i>Clear</div>
     <div class="lg-item muted" id="geomStatus"></div>
+  </div>
+
+  <div class="layers-ctl" id="layersCtl" aria-label="Map layers">
+    <div class="lc-title">Weather layers</div>
+    <label class="lc-row"><input type="checkbox" id="lyRoads" checked><span>Road flood sensors</span></label>
+    <label class="lc-row"><input type="checkbox" id="lyRadar" checked><span>Rain radar</span></label>
+    <label class="lc-row"><input type="checkbox" id="lyRain"><span>Rainfall gauges</span></label>
+    <label class="lc-row"><input type="checkbox" id="lyWl"><span>River / canal levels</span></label>
+  </div>
+
+  <div class="radar-ctl hidden" id="radarCtl">
+    <button id="radarPlay" aria-label="Play radar loop">▶</button>
+    <span id="radarTime">–</span>
   </div>
 </div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>

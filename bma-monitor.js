@@ -288,14 +288,192 @@
   const segByCode = new Map(); // code -> Leaflet polyline
   const markerByCode = new Map(); // code -> Leaflet circleMarker
 
+  let radarLayerGroup, rainLayerGroup, wlLayerGroup;
+
   function initMap() {
     map = L.map("map", { zoomControl: true, attributionControl: true }).setView([13.75, 100.55], 12);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       attribution: "&copy; OpenStreetMap contributors",
       maxZoom: 19,
     }).addTo(map);
+    radarLayerGroup = L.layerGroup().addTo(map); // below sensors
     segLayer = L.layerGroup().addTo(map);
     markerLayer = L.layerGroup().addTo(map);
+    rainLayerGroup = L.layerGroup();
+    wlLayerGroup = L.layerGroup();
+  }
+
+  // ---------- weather: rain radar (RainViewer) + rain gauges & river/canal levels (ThaiWater) ----------
+
+  const TW = "https://api-v3.thaiwater.net/api/v1/thaiwater30/public/";
+  const WX_URLS = { rain: TW + "rain_24h", wl: TW + "waterlevel_load", radar: "https://api.rainviewer.com/public/weather-maps.json" };
+  const RAIN24 = [[150, "#8b0a1a", ">150"], [90, "#e5383b", "90–150"], [35, "#f26b1d", "35–90"], [10, "#f0b93b", "10–35"], [0.1, "#59c3ea", "0.1–10"], [-1, "#5b6b84", "0"]];
+  const WLS = [[100, "#e5383b", ">100 over bank"], [90, "#f26b1d", "90–100 near bank"], [70, "#f0b93b", "70–90 high"], [30, "#34d399", "30–70 normal"], [-1e9, "#5b6b84", "≤30 low"]];
+  const pickScale = (sc, v) => { for (const s of sc) if (v > s[0]) return s; return sc[sc.length - 1]; };
+  const BKK_BBOX = { s: 13.3, n: 14.2, w: 100.1, e: 101.0 };
+  const inBkkBox = (la, lo) => la >= BKK_BBOX.s && la <= BKK_BBOX.n && lo >= BKK_BBOX.w && lo <= BKK_BBOX.e;
+
+  function bkkDate(s) {
+    if (!s) return null;
+    const m = String(s).match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(:\d{2})?/);
+    if (!m) return null;
+    const d = new Date(m[1] + "T" + m[2] + (m[3] || ":00") + "+07:00");
+    return isNaN(d) ? null : d;
+  }
+  function fmtBkkTime(d) {
+    return d ? new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Bangkok", hour: "2-digit", minute: "2-digit", hour12: false }).format(d) : "–";
+  }
+
+  // -- radar --
+  let radarFrames = [], radarIdx = 0, radarTimer = null, radarTiles = {};
+  async function loadRadar() {
+    try {
+      const d = await fetchJSON(WX_URLS.radar);
+      const past = d && d.radar && d.radar.past;
+      if (!Array.isArray(past) || !past.length) throw new Error("no radar frames");
+      radarFrames = past.slice(-7).map((f) => ({ time: new Date(f.time * 1000), url: d.host + f.path + "/256/{z}/{x}/{y}/2/1_1.png" }));
+      const last = radarFrames[radarFrames.length - 1];
+      stopRadar();
+      radarLayerGroup.clearLayers();
+      radarTiles = {};
+      radarIdx = radarFrames.length - 1;
+      showRadarFrame(radarIdx);
+      document.getElementById("radarCtl").classList.toggle("hidden", !document.getElementById("lyRadar").checked);
+    } catch (e) {
+      console.warn("radar unavailable", e);
+      document.getElementById("radarCtl").classList.add("hidden");
+    }
+  }
+  function radarTileLayer(i) {
+    const f = radarFrames[i];
+    if (!radarTiles[f.url]) {
+      radarTiles[f.url] = L.tileLayer(f.url, {
+        opacity: 0, maxNativeZoom: 7, maxZoom: 19, zIndex: 300,
+        attribution: 'Radar &copy; <a href="https://www.rainviewer.com">RainViewer</a>',
+      });
+    }
+    const l = radarTiles[f.url];
+    if (!radarLayerGroup.hasLayer(l)) radarLayerGroup.addLayer(l);
+    return l;
+  }
+  function showRadarFrame(i) {
+    const l = radarTileLayer(i);
+    Object.values(radarTiles).forEach((x) => { if (x !== l) x.setOpacity(0); });
+    l.setOpacity(0.5);
+    if (radarFrames[i + 1]) radarTileLayer(i + 1);
+    document.getElementById("radarTime").textContent =
+      fmtBkkTime(radarFrames[i].time) + (i === radarFrames.length - 1 ? " · latest" : "") + " ICT";
+  }
+  function stopRadar() {
+    if (radarTimer) clearInterval(radarTimer);
+    radarTimer = null;
+    const btn = document.getElementById("radarPlay");
+    if (btn) btn.textContent = "▶";
+  }
+
+  // -- rain gauges --
+  async function loadRain() {
+    try {
+      const d = await fetchJSON(WX_URLS.rain);
+      if (!d || !Array.isArray(d.data)) throw new Error("bad rain response");
+      const cutoff = Date.now() - 30 * 3600 * 1000;
+      const stations = d.data
+        .map((x) => ({
+          x,
+          t: bkkDate(x.rainfall_datetime),
+          lat: parseFloat(x.station && x.station.tele_station_lat),
+          lon: parseFloat(x.station && x.station.tele_station_long),
+          r24: x.rain_24h != null ? parseFloat(x.rain_24h) : null,
+        }))
+        .filter((s) => s.lat && s.lon && inBkkBox(s.lat, s.lon) && s.t && s.t.getTime() >= cutoff && s.r24 != null);
+      rainLayerGroup.clearLayers();
+      for (const s of stations) {
+        const p = pickScale(RAIN24, s.r24);
+        const name = (s.x.station.tele_station_name && (s.x.station.tele_station_name.en || s.x.station.tele_station_name.th)) || "Rain gauge";
+        const html = `<div class="m">Rainfall gauge · ThaiWater</div><h3>${escapeHtml(name)}</h3><div><span class="big">${s.r24}</span> mm / 24h</div><div class="m">Reading ${fmtBkkTime(s.t)} ICT</div>`;
+        L.circleMarker([s.lat, s.lon], { radius: s.r24 > 90 ? 8 : 6, color: "#fff", weight: 1.5, fillColor: p[1], fillOpacity: 0.9 })
+          .bindPopup(html)
+          .addTo(rainLayerGroup);
+      }
+    } catch (e) {
+      console.warn("rain gauges unavailable", e);
+    }
+  }
+
+  // -- river / canal water levels --
+  async function loadWL() {
+    try {
+      const d = await fetchJSON(WX_URLS.wl);
+      const arr = d && d.waterlevel_data && d.waterlevel_data.data;
+      if (!Array.isArray(arr)) throw new Error("bad water-level response");
+      const stations = arr
+        .map((x) => ({
+          x,
+          t: bkkDate(x.waterlevel_datetime),
+          lat: parseFloat(x.station && x.station.tele_station_lat),
+          lon: parseFloat(x.station && x.station.tele_station_long),
+          pct: x.storage_percent != null ? parseFloat(x.storage_percent) : null,
+          msl: x.waterlevel_msl != null ? parseFloat(x.waterlevel_msl) : null,
+        }))
+        .filter((s) => s.lat && s.lon && inBkkBox(s.lat, s.lon) && s.t);
+      wlLayerGroup.clearLayers();
+      for (const s of stations) {
+        const stale = Date.now() - s.t > 6 * 3600 * 1000;
+        const p = s.pct != null ? pickScale(WLS, s.pct) : null;
+        const color = stale ? "#5b6b84" : p ? p[1] : "#5b6b84";
+        const name = (s.x.station.tele_station_name && (s.x.station.tele_station_name.en || s.x.station.tele_station_name.th)) || "Water-level station";
+        const html = `<div class="m">River / canal station · ThaiWater${stale ? " · stale" : ""}</div><h3>${escapeHtml(name)}</h3><div><span class="big">${s.msl != null ? s.msl.toFixed(2) : "–"}</span> m MSL${s.pct != null ? " · " + s.pct.toFixed(0) + "% of bank-full" : ""}</div><div class="m">Reading ${fmtBkkTime(s.t)} ICT</div>`;
+        const icon = L.divIcon({
+          className: "", iconSize: [14, 14], iconAnchor: [7, 7],
+          html: `<div style="width:12px;height:12px;transform:rotate(45deg);border-radius:3px;border:2px solid #fff;background:${color};box-shadow:0 1px 4px rgba(0,0,0,.35)"></div>`,
+        });
+        L.marker([s.lat, s.lon], { icon }).bindPopup(html).addTo(wlLayerGroup);
+      }
+    } catch (e) {
+      console.warn("water-level stations unavailable", e);
+    }
+  }
+
+  function wireWeatherControls() {
+    const lyRoads = document.getElementById("lyRoads");
+    const lyRadar = document.getElementById("lyRadar");
+    const lyRain = document.getElementById("lyRain");
+    const lyWl = document.getElementById("lyWl");
+
+    lyRoads.addEventListener("change", () => {
+      if (lyRoads.checked) { map.addLayer(segLayer); map.addLayer(markerLayer); }
+      else { map.removeLayer(segLayer); map.removeLayer(markerLayer); }
+    });
+    lyRadar.addEventListener("change", () => {
+      if (lyRadar.checked) { map.addLayer(radarLayerGroup); document.getElementById("radarCtl").classList.toggle("hidden", !radarFrames.length); }
+      else { map.removeLayer(radarLayerGroup); document.getElementById("radarCtl").classList.add("hidden"); }
+    });
+    lyRain.addEventListener("change", () => {
+      if (lyRain.checked) { map.addLayer(rainLayerGroup); if (!rainLayerGroup.getLayers().length) loadRain(); }
+      else map.removeLayer(rainLayerGroup);
+    });
+    lyWl.addEventListener("change", () => {
+      if (lyWl.checked) { map.addLayer(wlLayerGroup); if (!wlLayerGroup.getLayers().length) loadWL(); }
+      else map.removeLayer(wlLayerGroup);
+    });
+
+    document.getElementById("radarPlay").addEventListener("click", () => {
+      const btn = document.getElementById("radarPlay");
+      if (radarTimer) { stopRadar(); radarIdx = radarFrames.length - 1; showRadarFrame(radarIdx); return; }
+      if (!radarFrames.length) return;
+      btn.textContent = "❚❚";
+      radarIdx = 0;
+      showRadarFrame(0);
+      radarTimer = setInterval(() => { radarIdx = (radarIdx + 1) % radarFrames.length; showRadarFrame(radarIdx); }, 800);
+    });
+  }
+
+  function bootWeather() {
+    wireWeatherControls();
+    loadRadar();
+    setInterval(loadRadar, 5 * 60 * 1000);
+    setInterval(() => { if (map.hasLayer(rainLayerGroup)) loadRain(); }, 10 * 60 * 1000);
+    setInterval(() => { if (map.hasLayer(wlLayerGroup)) loadWL(); }, 10 * 60 * 1000);
   }
 
   function popupHTML(p) {
@@ -489,6 +667,7 @@
   document.addEventListener("DOMContentLoaded", async () => {
     initMap();
     wireControls();
+    bootWeather();
     const pointsByCode = new Map();
     const points = await tick(pointsByCode);
 
