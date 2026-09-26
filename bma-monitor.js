@@ -408,33 +408,48 @@
   const markerByCode = new Map(); // code -> Leaflet circleMarker
 
   let radarLayerGroup, rainLayerGroup, wlLayerGroup;
-  let baseTileLayer, labelTileLayer;
-  const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/";
+  let glBaseLayer;
+  const OFM_STYLE = (dark) => `https://tiles.openfreemap.org/styles/${dark ? "dark" : "positron"}`;
 
   function isDarkMode() {
     return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
   }
 
-  function applyBasemap() {
+  // Force every label in the vector basemap to English/Latin script. OpenMapTiles' own default style
+  // renders "name:latin name:nonlatin" (i.e. bilingual, e.g. "Bangkok กรุงเทพมหานคร") — replace that
+  // with a straight coalesce so streets, not just cities, come out in English wherever a Latin form
+  // exists (name_en, then the transliterated name:latin, then whatever `name` is as a last resort).
+  function forceEnglishLabels(style) {
+    const EN_FIELD = ["coalesce", ["get", "name_en"], ["get", "name:latin"], ["get", "name"]];
+    for (const layer of style.layers || []) {
+      if (layer.layout && layer.layout["text-field"] !== undefined) {
+        layer.layout["text-field"] = EN_FIELD;
+      }
+    }
+    return style;
+  }
+
+  async function buildBasemapStyle(dark) {
+    const style = await fetchJSON(OFM_STYLE(dark));
+    return forceEnglishLabels(style);
+  }
+
+  async function applyBasemap() {
     const dark = isDarkMode();
-    if (baseTileLayer) map.removeLayer(baseTileLayer);
-    if (labelTileLayer) map.removeLayer(labelTileLayer);
-    const base = dark ? "World_Dark_Gray_Base" : "World_Light_Gray_Base";
-    const ref = dark ? "World_Dark_Gray_Reference" : "World_Light_Gray_Reference";
-    baseTileLayer = L.tileLayer(ESRI + base + "/MapServer/tile/{z}/{y}/{x}", {
-      maxNativeZoom: 16, maxZoom: 19,
-      attribution: "Basemap &copy; Esri, HERE, Garmin, &copy; OpenStreetMap contributors",
-    }).addTo(map);
-    baseTileLayer.bringToBack();
-    labelTileLayer = L.tileLayer(ESRI + ref + "/MapServer/tile/{z}/{y}/{x}", {
-      pane: "labels", maxNativeZoom: 16, maxZoom: 19,
-    }).addTo(map);
+    let style;
+    try {
+      style = await buildBasemapStyle(dark);
+    } catch (e) {
+      console.warn("vector basemap style unavailable, map will show without a basemap", e);
+      return;
+    }
+    if (glBaseLayer) map.removeLayer(glBaseLayer);
+    glBaseLayer = L.maplibreGL({ style, attributionControl: false }).addTo(map);
   }
 
   function initMap() {
     map = L.map("map", { zoomControl: true, attributionControl: true }).setView([13.75, 100.55], 12);
-    map.createPane("labels").style.zIndex = 450;
-    map.getPane("labels").style.pointerEvents = "none";
+    map.attributionControl.addAttribution('Basemap &copy; <a href="https://openfreemap.org">OpenFreeMap</a>, <a href="https://www.openmaptiles.org/">OpenMapTiles</a>, &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors');
     applyBasemap();
     if (window.matchMedia) {
       window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyBasemap);
